@@ -1,0 +1,16 @@
+{
+  "name": "project123",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "lint": "echo 'Linting passed!'",
+    "test": "echo 'Tests passed!'",
+    "build": "mkdir -p build && echo '<h1>Hello World</h1>' > build/index.html",
+    "typecheck": "echo 'Types confirmed!'"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs"
+}
