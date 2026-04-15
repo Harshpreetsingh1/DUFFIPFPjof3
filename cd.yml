@@ -1,0 +1,72 @@
+name: Continuous Deployment
+
+on:
+  workflow_run:
+    workflows: ["Continuous Integration"]
+    branches: [main, develop]
+    types: [completed]
+
+jobs:
+  deploy:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Download Build Artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifact
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Deploy to S3 (Staging/Production)
+        run: |
+          BUCKET_NAME=${{ github.ref_name == 'main' && secrets.PRODUCTION_S3_BUCKET || secrets.STAGING_S3_BUCKET }}
+          
+          # Upload static assets with long cache
+          aws s3 sync build/ s3://$BUCKET_NAME/ --delete --exclude "index.html" --cache-control "max-age=31536000, public, immutable"
+          
+          # Upload index.html with no-cache
+          aws s3 cp build/index.html s3://$BUCKET_NAME/index.html --cache-control "no-cache, no-store, must-revalidate"
+          
+          # Create versioned backup
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          aws s3 sync build/ s3://$BUCKET_NAME/deployments/$TIMESTAMP/
+
+      - name: Invalidate CloudFront
+        run: |
+          DISTRIBUTION_ID=${{ github.ref_name == 'main' && secrets.PRODUCTION_CLOUDFRONT_ID || secrets.STAGING_CLOUDFRONT_ID }}
+          aws cloudfront create-invalidation --distribution-id $DISTRIBUTION_ID --paths "/*"
+
+  on-failure:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' }}
+    uses: ./.github/workflows/notify.yml
+    with:
+      status: 'failure'
+      environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+      commit_sha: ${{ github.sha }}
+      actor: ${{ github.actor }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+  on-success:
+    needs: deploy
+    if: success()
+    uses: ./.github/workflows/notify.yml
+    with:
+      status: 'success'
+      environment: ${{ github.ref_name == 'main' && 'production' || 'staging' }}
+      commit_sha: ${{ github.sha }}
+      actor: ${{ github.actor }}
+    secrets:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}

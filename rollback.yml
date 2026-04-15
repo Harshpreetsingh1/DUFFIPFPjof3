@@ -1,0 +1,69 @@
+name: Manual Rollback
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Environment to rollback'
+        required: true
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      version:
+        description: 'Version (timestamp) to rollback to. Use "previous" for the last backup.'
+        required: true
+        default: 'previous'
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Rollback
+        run: |
+          ENVIRONMENT=${{ github.event.inputs.environment }}
+          VERSION=${{ github.event.inputs.version }}
+          
+          if [ "$ENVIRONMENT" == "production" ]; then
+            BUCKET_NAME=${{ secrets.PRODUCTION_S3_BUCKET }}
+            DISTRIBUTION_ID=${{ secrets.PRODUCTION_CLOUDFRONT_ID }}
+          else
+            BUCKET_NAME=${{ secrets.STAGING_S3_BUCKET }}
+            DISTRIBUTION_ID=${{ secrets.STAGING_CLOUDFRONT_ID }}
+          fi
+          
+          if [ "$VERSION" == "previous" ]; then
+            # Find the second most recent deployment (current is latest)
+            VERSION=$(aws s3 ls s3://$BUCKET_NAME/deployments/ | sort -r | sed -n '2p' | awk '{print $2}' | sed 's/\///')
+          fi
+          
+          if [ -z "$VERSION" ]; then
+            echo "Error: No version found to rollback to."
+            exit 1
+          fi
+          
+          echo "Rolling back $ENVIRONMENT to version $VERSION..."
+          
+          # Copy from backup to root
+          aws s3 sync s3://$BUCKET_NAME/deployments/$VERSION/ s3://$BUCKET_NAME/ --delete
+          
+          # Invalidate CloudFront
+          aws cloudfront create-invalidation --distribution-id $DISTRIBUTION_ID --paths "/*"
+
+      - name: Notify Slack
+        uses: ./.github/workflows/notify.yml
+        with:
+          status: 'Rolled back to ${{ github.event.inputs.version }}'
+          environment: ${{ github.event.inputs.environment }}
+          commit_sha: ${{ github.sha }}
+          actor: ${{ github.actor }}
+        secrets:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
